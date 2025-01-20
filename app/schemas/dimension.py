@@ -1,4 +1,4 @@
-# 3. app/schemas/dimension.py
+# app/schemas/dimension.py
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
@@ -17,9 +17,12 @@ class ObjectMeasurement(BaseModel):
     lighting_condition: str
     reference_object: str
 
-class MeasurementResponse(ObjectMeasurement):
+class MeasurementResponse(BaseModel):
     id: int
     created_at: datetime
+    measurements: List[ObjectMeasurement]
+    visualization_image: str  # Base64 encoded image
+    image_dimensions: dict
 
     class Config:
         from_attributes = True

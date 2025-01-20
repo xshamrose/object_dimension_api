@@ -1,6 +1,6 @@
-#app/api/endpoints/measurement.py
-
+# app/api/endpoints/measurement.py
 from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi.responses import JSONResponse
 from typing import List
 import shutil
 from pathlib import Path
@@ -28,24 +28,29 @@ async def measure_object(
         shutil.copyfileobj(file.file, buffer)
     
     try:
-        # Process image - only pass the file_path as per ImageProcessor implementation
+        # Process image and get results including visualization
         result = await image_processor.process_image(file_path)
         
-        # Create response
-        measurement = ObjectMeasurement(
-            object_type=object_type,
-            dimensions=result["measurements"][0]["dimensions"],  # Get first detected object's dimensions
-            confidence_score=result["measurements"][0]["confidence_score"],
-            capture_angle="front",
-            lighting_condition="normal",
-            reference_object="none"  # Since we're not using reference objects in current implementation
-        )
+        # Create measurement objects for each detected object
+        measurements = []
+        for detection in result["measurements"]:
+            measurement = ObjectMeasurement(
+                object_type=detection["object_type"],
+                dimensions=detection["dimensions"],
+                confidence_score=detection["confidence_score"],
+                capture_angle="front",
+                lighting_condition="normal",
+                reference_object="none"
+            )
+            measurements.append(measurement)
         
-        # Create response with additional fields
+        # Create response with visualization
         response = MeasurementResponse(
             id=1,  # You'd get this from database
             created_at=datetime.now(),
-            **measurement.dict()
+            measurements=measurements,
+            visualization_image=result["visualization"],
+            image_dimensions=result["image_dimensions"]
         )
         
         return response

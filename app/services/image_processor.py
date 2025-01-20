@@ -1,4 +1,3 @@
-#app/services/image_processor.py
 import cv2
 import numpy as np
 from ultralytics import YOLO
@@ -7,9 +6,15 @@ from pathlib import Path
 from typing import Tuple, Dict, List
 
 class ImageProcessor:
+    CONF_THRESHOLD = 0.25
+    IOU_THRESHOLD = 0.45
+    MAX_DETECTIONS = 300
+    BASE_DEPTH = 1000  # baseline depth in mm
+    MAX_SIZE = 640  # YOLO11 default size
+
     def __init__(self):
-        # Initialize YOLO model
-        self.model = YOLO('yolov8n.pt')
+        # Initialize YOLO11 model (using medium variant for balanced performance)
+        self.model = YOLO('yolo11m-seg.pt')  # Change to yolo11n/s/l/x as needed
         
         # Camera calibration matrix (you should calibrate this for your specific camera)
         self.camera_matrix = np.array([
@@ -20,6 +25,10 @@ class ImageProcessor:
         
     async def process_image(self, image_path: Path) -> Dict[str, any]:
         try:
+            # Validate image path
+            if not image_path.exists() or image_path.suffix.lower() not in ['.jpg', '.jpeg', '.png']:
+                raise ValueError("Invalid image path or unsupported file format")
+        
             # Read image
             image = cv2.imread(str(image_path))
             if image is None:
@@ -31,42 +40,50 @@ class ImageProcessor:
             # Process image
             processed = self._preprocess_image(image)
             
-            # Detect objects using YOLO
-            results = self.model(processed)
+            # Detect objects using YOLO11
+            results = self.model.predict(
+                source=processed,
+                conf=self.CONF_THRESHOLD,
+                iou=self.IOU_THRESHOLD,
+                max_det=self.MAX_DETECTIONS,
+                verbose=False
+            )
             
             # Create visualization image
             visualization = processed.copy()
             
             measurements = []
-            for r in results[0].boxes:
-                box = r.xyxy[0].cpu().numpy()  # get box coordinates in (x1, y1, x2, y2) format
-                x1, y1, x2, y2 = map(int, box)
-                conf = float(r.conf[0])
-                cls = int(r.cls[0])
-                class_name = self.model.names[cls]
-                
-                # Calculate real-world dimensions
-                dimensions = self._calculate_real_dimensions(
-                    processed, (x1, y1, x2, y2), self.camera_matrix
-                )
-                
-                # Draw bounding box
-                cv2.rectangle(visualization, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                
-                # Draw dimensions
-                self._draw_measurements(
-                    visualization,
-                    (x1, y1, x2, y2),
-                    dimensions,
-                    class_name
-                )
-                
-                measurements.append({
-                    "object_type": class_name,
-                    "dimensions": dimensions,
-                    "confidence_score": float(conf),
-                    "bbox": [x1, y1, x2, y2]
-                })
+            if results and len(results) > 0:
+                boxes = results[0].boxes
+                for box in boxes:
+                    # Get box coordinates in (x1, y1, x2, y2) format
+                    xyxy = box.xyxy[0].cpu().numpy()
+                    x1, y1, x2, y2 = map(int, xyxy)
+                    
+                    # Get confidence and class
+                    conf = float(box.conf[0])
+                    cls = int(box.cls[0])
+                    class_name = self.model.names[cls]
+                    
+                    # Calculate real-world dimensions
+                    dimensions = self._calculate_real_dimensions(
+                        processed, (x1, y1, x2, y2), self.camera_matrix
+                    )
+                    
+                    # Draw bounding box and measurements
+                    self._draw_measurements(
+                        visualization,
+                        (x1, y1, x2, y2),
+                        dimensions,
+                        class_name
+                    )
+                    
+                    measurements.append({
+                        "object_type": class_name,
+                        "dimensions": dimensions,
+                        "confidence_score": float(conf),
+                        "bbox": [x1, y1, x2, y2]
+                    })
             
             # Encode the visualization image
             _, buffer = cv2.imencode('.jpg', visualization)
@@ -85,11 +102,10 @@ class ImageProcessor:
             raise ValueError(f"Image processing failed: {str(e)}")
 
     def _preprocess_image(self, image: np.ndarray) -> np.ndarray:
-        # Resize if needed
-        max_size = 1024
+        # Resize if needed while maintaining aspect ratio
         height, width = image.shape[:2]
-        if height > max_size or width > max_size:
-            scale = max_size / max(height, width)
+        if height > self.MAX_SIZE or width > self.MAX_SIZE:
+            scale = self.MAX_SIZE / max(height, width)
             image = cv2.resize(image, None, fx=scale, fy=scale)
         
         return image
@@ -106,18 +122,42 @@ class ImageProcessor:
         pixel_width = x2 - x1
         pixel_height = y2 - y1
         
-        # Estimate depth using size and position in image
-        image_center = image.shape[1] / 2
-        object_center_x = (x1 + x2) / 2
-        
-        # Calculate depth based on focal length and assumed real-world size
+        # Get focal length from camera matrix
         focal_length = camera_matrix[0, 0]
-        assumed_width = 500  # mm (assumed average object width)
-        depth = (focal_length * assumed_width) / pixel_width
         
-        # Calculate real dimensions using similar triangles
+        # Calculate object's position in image
+        image_center_x = image.shape[1] / 2
+        image_center_y = image.shape[0] / 2
+        object_center_x = (x1 + x2) / 2
+        object_center_y = (y1 + y2) / 2
+        
+        # Calculate distance from center (for perspective correction)
+        distance_from_center = np.sqrt(
+            (object_center_x - image_center_x) ** 2 + 
+            (object_center_y - image_center_y) ** 2
+        )
+        max_distance = np.sqrt(image_center_x ** 2 + image_center_y ** 2)
+        distance_factor = 1 + (distance_from_center / max_distance) * 0.5
+        
+        # Estimate depth using image size and object size relationships
+        image_diagonal = np.sqrt(image.shape[0]**2 + image.shape[1]**2)
+        object_diagonal = np.sqrt(pixel_width**2 + pixel_height**2)
+        relative_size = object_diagonal / image_diagonal
+        
+        # Base depth calculation (objects taking up less of frame are typically further away)
+        depth = self.BASE_DEPTH * (1 / relative_size) * distance_factor
+        
+        # Calculate real dimensions using the depth and focal length
         real_width = (pixel_width * depth) / focal_length
         real_height = (pixel_height * depth) / focal_length
+        
+        # Apply aspect ratio correction
+        aspect_ratio = pixel_height / pixel_width
+        if aspect_ratio > 2 or aspect_ratio < 0.5:
+            # For objects with extreme aspect ratios, adjust calculations
+            avg_dimension = (real_width + real_height) / 2
+            real_width = avg_dimension * np.sqrt(1 / aspect_ratio)
+            real_height = avg_dimension * np.sqrt(aspect_ratio)
         
         return {
             "width": round(real_width, 1),
@@ -134,6 +174,9 @@ class ImageProcessor:
         object_type: str
     ) -> None:
         x1, y1, x2, y2 = bbox
+        
+        # Draw bounding box
+        cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
         
         # Draw width measurement
         cv2.line(image, (x1, y2 + 20), (x2, y2 + 20), (0, 0, 255), 2)
@@ -163,7 +206,7 @@ class ImageProcessor:
             2
         )
         
-        # Draw object type and confidence
+        # Draw object type
         cv2.putText(
             image,
             f"{object_type}",

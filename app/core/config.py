@@ -5,7 +5,7 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
     PROJECT_NAME: str = "Object Dimension Detection API"
-    MODEL_PATH: str = "models/midas_model.pt"
+    MODEL_PATH: str = "models/yolo11m.pt"
     UPLOAD_FOLDER: str = "uploads"
     
     # Database settings
