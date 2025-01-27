@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.endpoints import measurement
+from app.api.endpoints import measurement,arcore
 from app.core.config import settings
 
 app = FastAPI(
@@ -22,6 +22,12 @@ app.include_router(
     measurement.router,
     prefix=settings.API_V1_STR + "/measurements",
     tags=["measurements"]
+)
+
+app.include_router(
+    arcore.router,
+    prefix="/api/v1/arcore",
+    tags=["ARCore Measurement"]
 )
 
 if __name__ == "__main__":
