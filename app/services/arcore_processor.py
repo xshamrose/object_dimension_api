@@ -9,7 +9,8 @@ from google.cloud import vision
 import google.auth.credentials
 # Create credentials from the API key
 from google.oauth2 import credentials
-creds = credentials.Credentials(token="AIzaSyB0Z4ctC4lziNeA_GI5TDg1SMfUGelz_Pc")
+TOKEN_KEY = "YOUR_API_KEY_ENV_VARIABLE_NAME"
+creds = credentials.Credentials(token=(TOKEN_KEY))
 class ARCoreProcessor:
     CONF_THRESHOLD = 0.5
     MAX_DETECTIONS = 100
